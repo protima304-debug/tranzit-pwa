@@ -1,0 +1,459 @@
+<script>
+  // PWA registration + Install tip
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js');
+    });
+  }
+  let deferredPrompt;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    document.getElementById('installTip').style.display = 'block';
+  });
+
+  document.addEventListener('DOMContentLoaded', function(){
+    // ==== ДАННЫЕ ====
+    const DATA = [
+      {id:1,title:'Банан (вес тары ~ 1.3 кг)',unit:'кг',price:840,stock:198},
+      {id:2,title:'Виноград красный (вес тары ~ 1.0 кг)',unit:'кг',price:903,stock:17385},
+      {id:3,title:'Картофель 25 кг',unit:'мешок',price:6500,stock:12},
+      {id:4,title:'Лук 20 кг',unit:'мешок',price:5200,stock:8},
+      {id:5,title:'Морковь 20 кг',unit:'мешок',price:5800,stock:5}
+    ];
+    const OPERATOR = { whatsappPhone:'77074708325', email:'orders@example.com' };
+
+    // ==== STATE ====
+    let filtered = DATA.slice();
+    const cart = new Map();
+    let activeTab = 'catalog';
+    let activeChip = 'all';
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+    const fmt = n => (new Intl.NumberFormat('ru-KZ')).format(Math.round(n||0));
+    const toast = (t) => { const el = $('#toast'); el.textContent=t; el.style.opacity=1; el.style.transform='translateX(-50%) translateY(-4px)'; setTimeout(()=>{el.style.opacity=0; el.style.transform='translateX(-50%)'},1600); };
+    const app = $('#app');
+    function isIOS(){ return /iP(hone|od|ad)/.test(navigator.platform) || (/Mac/.test(navigator.userAgent) && 'ontouchend' in document); }
+
+    function render(){ renderView(); bindTabs(); updateBottom(); }
+    function renderView(){ if(activeTab==='catalog') renderCatalog(); else if(activeTab==='cart') renderCart(); else if(activeTab==='promos') renderPromos(); else if(activeTab==='profile') renderProfile(); }
+    function bindTabs(){ $$('#tabs .tab').forEach(t => t.addEventListener('click', () => { activeTab=t.dataset.tab; $$('#tabs .tab').forEach(x=>x.classList.toggle('active', x===t)); renderView(); updateBottom(); })); }
+
+    function renderCatalog(){
+      app.innerHTML = `
+        <div class="header">
+          <div class="container">
+            <div class="header-inner">
+              <div class="logo">
+                <div class="logo-badge">T</div>
+                <div>ТРАНЗИТ<div class="small" style="color:var(--muted);font-weight:500">Оптовый каталог</div></div>
+              </div>
+            </div>
+            <div class="promo">
+              <div class="dot"></div>
+              <div><b>Акция:</b> закажи от <b>100&nbsp;000 ₸</b> — <b>5 кг</b> любого товара в подарок. <a href="#" id="promoLink" class="small" style="text-decoration:underline;margin-left:6px">подробнее</a></div>
+            </div>
+            <div class="search">
+              <input id="search" class="search-input" type="search" placeholder="Поиск по товарам...">
+              <button id="clearBtn" class="search-btn" aria-label="Очистить поиск">✕</button>
+            </div>
+            <div class="chips" id="chips">
+              <div class="chip ${'active'}" data-key="all">Все</div>
+              <div class="chip" data-key="available">В наличии</div>
+              <div class="chip" data-key="price_asc">Дешевле</div>
+              <div class="chip" data-key="price_desc">Дороже</div>
+            </div>
+          </div>
+        </div>
+        <div class="container">
+          <div class="grid" id="grid"></div>
+        </div>`;
+      $('#promoLink').addEventListener('click', (e)=>{ e.preventDefault(); switchTo('promos'); });
+      bindHeader(); renderGrid(filtered);
+    }
+
+    function bindHeader(){
+      const search = $('#search'); const clearBtn = $('#clearBtn');
+      if(search){ search.addEventListener('input', applyFilters); clearBtn.addEventListener('click', () => { search.value=''; applyFilters(); }); }
+      $$('#chips .chip').forEach(ch => ch.addEventListener('click', () => { activeChip=ch.dataset.key; $$('#chips .chip').forEach(c => c.classList.toggle('active', c===ch)); applyFilters(); }));
+    }
+
+    function renderGrid(items){
+      const grid = $('#grid'); if(!grid) return;
+      grid.innerHTML = '';
+      if(items.length===0){ grid.innerHTML='<div class="empty">Ничего не найдено.</div>'; return; }
+      items.forEach(p => grid.appendChild(ProductCard(p)));
+    }
+
+    function ProductCard(p){
+      const el = document.createElement('div'); el.className='card';
+      const low = p.stock <= 5; const out = p.stock <= 0;
+      const emoji = p.title.includes('Банан') ? '🍌' : (p.title.includes('Виноград') ? '🍇' : '🥕');
+      el.innerHTML = `
+        <div class="thumb">${emoji}</div>
+        <div class="card-body">
+          <div class="title" title="${p.title}">${p.title}</div>
+          <div class="meta">
+            <div>
+              <div class="price">${fmt(p.price)} ₸</div>
+              <div class="unit">за ${p.unit}</div>
+              <div class="badges">
+                ${out ? '<span class="badge low">Нет в наличии</span>' : ''}
+                ${(!out && low) ? '<span class="badge low">Мало</span>' : ''}
+                <span class="badge stock">Остаток: ${p.stock}</span>
+              </div>
+            </div>
+          </div>
+          <div class="qty">
+            <button class="btn" data-act="dec" aria-label="Уменьшить">−</button>
+            <input type="number" step="1" min="0" value="0" inputmode="numeric" aria-label="Количество">
+            <button class="btn" data-act="inc" aria-label="Увеличить">+</button>
+          </div>
+          <button class="add-btn" ${out?'disabled':''}>В корзину</button>
+        </div>`;
+      const input = el.querySelector('input');
+      el.querySelector('[data-act="dec"]').addEventListener('click', () => { input.value = Math.max(0, Number(input.value||0)-1); });
+      el.querySelector('[data-act="inc"]').addEventListener('click', () => { input.value = Number(input.value||0)+1; });
+      el.querySelector('.add-btn').addEventListener('click', () => { const qty=Number(input.value||0)||1; if(qty<=0) return; cart.set(p.id,(cart.get(p.id)||0)+qty); input.value=0; updateBottom(); toast('Добавлено в корзину'); });
+      return el;
+    }
+
+    function applyFilters(){
+      const q = ($('#search')?.value||'').trim().toLowerCase();
+      filtered = DATA.filter(p => (p.title||'').toLowerCase().includes(q));
+      if(activeChip==='available') filtered = filtered.filter(p => p.stock>0);
+      if(activeChip==='price_asc') filtered = filtered.slice().sort((a,b)=>a.price-b.price);
+      if(activeChip==='price_desc') filtered = filtered.slice().sort((a,b)=>b.price-a.price);
+      if(activeTab==='catalog') renderGrid(filtered);
+    }
+
+    // ==== CART ====
+    function renderCart(){
+      const list = buildCartRows(); const sum = cartTotal();
+      app.innerHTML = `
+        <div class="header"><div class="container"><div class="header-inner"><div class="logo"><div class="logo-badge">🛒</div><div>Ваша корзина</div></div></div></div></div>
+        <div class="container">
+          ${list.length===0 ? '<div class="empty">Корзина пуста. Перейдите в Каталог и добавьте товары.</div>' : ''}
+          <div class="list" id="cartList"></div>
+          <div style="font-weight:800;margin-top:8px">Итого: <span id="cartSum">${fmt(sum)} ₸</span></div>
+          <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:wrap">
+            <button class="btn" id="btnCopy">Скопировать заказ</button>
+            <button class="btn" id="btnExcel">Скачать Excel (.xlsx)</button>
+            <button class="btn btn-accent" id="btnSendWA">Отправить в WhatsApp</button>
+            <button class="btn" id="btnSendEmail">Отправить на почту</button>
+          </div>
+          <div class="small muted" style="margin:6px 0 12px">Формат: Excel 2007 (.xlsx). В столбце «Кол-во» — количество заказа, столбец «Количество» пустой.</div>
+        </div>`;
+      const container = $('#cartList'); list.forEach(r => container.appendChild(r));
+      $('#btnCopy').addEventListener('click', copyOrder);
+      $('#btnExcel').addEventListener('click', ()=>{ const o=exportOrder(true); if(!o.items.length) return toast('Корзина пуста'); downloadXLSX(o); });
+      $('#btnSendWA').addEventListener('click', sendWA);
+      $('#btnSendEmail').addEventListener('click', sendEmail);
+    }
+
+    function buildCartRows(){
+      const rows=[];
+      cart.forEach((q,id)=>{ const p=DATA.find(x=>x.id===id); if(!p||q<=0) return;
+        const row=document.createElement('div'); row.className='line';
+        row.innerHTML = `
+          <div><div style="font-weight:700">${p.title}</div>
+          <div class="small muted">${fmt(p.price)} ₸ × <span data-q>${q}</span></div></div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn" data-act="dec">−</button>
+            <button class="btn" data-act="inc">+</button>
+            <button class="btn" data-act="rm" title="Удалить">✕</button>
+          </div>`;
+        row.querySelector('[data-act="dec"]').addEventListener('click', ()=>{ setQty(id,q-1); renderCart(); });
+        row.querySelector('[data-act="inc"]').addEventListener('click', ()=>{ setQty(id,q+1); renderCart(); });
+        row.querySelector('[data-act="rm"]').addEventListener('click', ()=>{ cart.delete(id); renderCart(); updateBottom(); });
+        rows.push(row);
+      });
+      return rows;
+    }
+
+    function setQty(id,qty){ if(qty<=0) cart.delete(id); else cart.set(id,qty); updateBottom(); }
+    function cartTotal(){ let s=0; cart.forEach((q,id)=>{ const p=DATA.find(x=>x.id===id); if(p&&q>0) s+=q*p.price; }); return s; }
+
+    function exportOrder(includeComment=false){
+      const items=[]; cart.forEach((q,id)=>{ const p=DATA.find(x=>x.id===id); if(p&&q>0) items.push({title:p.title,unit:p.unit,price:p.price,qty:q}); });
+      const total=items.reduce((a,i)=>a+i.price*i.qty,0);
+      const shopName=(localStorage.getItem('shopName')||$('#shopName')?.value||'').trim();
+      const shopPhone=(localStorage.getItem('shopPhone')||$('#shopPhone')?.value||'').trim();
+      const comment= includeComment ? ($('#shopComment')?.value||'').trim() : '';
+      return {shopName,shopPhone,comment,items,total};
+    }
+
+    function toText(o){
+      return ['Магазин: '+(o.shopName||'-'),'Контактный номер: '+(o.shopPhone||'-'), (o.comment?('Комментарий: '+o.comment):'')].filter(Boolean).join('\\n');
+    }
+
+    // ===== XLSX (Excel 2007) генератор (минимальный OOXML) =====
+    function strToU8(s){ return new TextEncoder().encode(s); }
+    const CRC_TABLE = (()=>{ let c,t=[]; for(let n=0;n<256;n++){ c=n; for(let k=0;k<8;k++){ c = ((c & 1) ? (0xEDB88320 ^ (c>>>1)) : (c>>>1)); } t[n]=c>>>0; } return t; })();
+    function crc32(u8){ let c=0xffffffff; for(let i=0;i<u8.length;i++){ c = CRC_TABLE[(c^u8[i])&0xff] ^ (c>>>8); } return (c^0xffffffff)>>>0; }
+    function dosDateTime(d=new Date()){
+      let dt = { time:0, date:0 };
+      dt.time = (d.getHours()<<11) | (d.getMinutes()<<5) | ((d.getSeconds()/2)|0);
+      dt.date = (((d.getFullYear()-1980)&0x7f)<<9) | ((d.getMonth()+1)<<5) | d.getDate();
+      return dt;
+    }
+    function u32le(n){ return new Uint8Array([n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255]); }
+    function u16le(n){ return new Uint8Array([n&255,(n>>>8)&255]); }
+    function concatU8(arrs){ let len=0; arrs.forEach(a=>len+=a.length); const out=new Uint8Array(len); let off=0; arrs.forEach(a=>{ out.set(a,off); off+=a.length; }); return out; }
+    function makeZip(files){
+      const localHeaders=[]; const centralHeaders=[]; let offset=0;
+      const dt = dosDateTime();
+      files.forEach(f=>{
+        const nameU8 = strToU8(f.name);
+        const crc = crc32(f.data);
+        const comp = f.data;
+        const local = concatU8([
+          u32le(0x04034b50),
+          u16le(20), u16le(0), u16le(0),
+          u16le(dt.time), u16le(dt.date),
+          u32le(crc), u32le(comp.length), u32le(comp.length),
+          u16le(nameU8.length), u16le(0),
+          nameU8, comp
+        ]);
+        localHeaders.push(local);
+        const central = concatU8([
+          u32le(0x02014b50),
+          u16le(20), u16le(20), u16le(0), u16le(0),
+          u16le(dt.time), u16le(dt.date),
+          u32le(crc), u32le(comp.length), u32le(comp.length),
+          u16le(nameU8.length), u16le(0), u16le(0),
+          u16le(0), u16le(0), u32le(0),
+          u32le(offset),
+          nameU8
+        ]);
+        centralHeaders.push(central);
+        offset += local.length;
+      });
+      const centralDir = concatU8(centralHeaders);
+      const end = concatU8([
+        u32le(0x06054b50), u16le(0), u16le(0),
+        u16le(files.length), u16le(files.length),
+        u32le(centralDir.length), u32le(offset),
+        u16le(0)
+      ]);
+      return new Blob([concatU8([...localHeaders, centralDir, end])], {type:'application/zip'});
+    }
+
+    function buildXLSX(o){
+      function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+      function cStr(v){ return `<c t="inlineStr"><is><t>${esc(v)}</t></is></c>`; }
+      function cNum(v){ return `<c><v>${Number(v||0)}</v></c>`; }
+
+      const sheetRows = [];
+      sheetRows.push(`<row r="1">${cStr('Магазин')}${cStr(o.shopName||'')}</row>`);
+      sheetRows.push(`<row r="2">${cStr('Контактный номер')}${cStr(o.shopPhone||'')}</row>`);
+      sheetRows.push(`<row r="3">${cStr('Комментарий')}${cStr(o.comment||'')}</row>`);
+      sheetRows.push(`<row r="4">${cStr('')}</row>`);
+
+      sheetRows.push(`<row r="5">
+        ${cStr('Номенклатура')}${cStr('Кол-во')}${cStr('Ед.')}${cStr('Цена')}${cStr('Сумма')}${cStr('Количество')}
+      </row>`);
+
+      let r = 6;
+      o.items.forEach(item=>{
+        sheetRows.push(`<row r="${r++}">
+          ${cStr(item.title)}${cNum(item.qty)}${cStr(item.unit)}${cNum(item.price)}${cNum(item.price*item.qty)}${cStr('')}
+        </row>`);
+      });
+      sheetRows.push(`<row r="${r}">${cStr('Итого')}${cStr('')}${cStr('')}${cStr('')}${cNum(o.total)}${cStr('')}</row>`);
+
+      const sheet =
+`<?xml version="1.0" encoding="UTF-8"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    ${sheetRows.join('\n')}
+  </sheetData>
+</worksheet>`;
+
+      const workbook =
+`<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Заказ" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>`;
+
+      const relsRoot =
+`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`;
+
+      const relsWorkbook =
+`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`;
+
+      const contentTypes =
+`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`;
+
+      const files = [
+        {name:'[Content_Types].xml', data:strToU8(contentTypes)},
+        {name:'_rels/.rels', data:strToU8(relsRoot)},
+        {name:'xl/workbook.xml', data:strToU8(workbook)},
+        {name:'xl/_rels/workbook.xml.rels', data:strToU8(relsWorkbook)},
+        {name:'xl/worksheets/sheet1.xml', data:strToU8(sheet)}
+      ];
+      const zipBlob = makeZip(files);
+      return new File([zipBlob], `order_${new Date().toISOString().replace(/[:T]/g,'-').slice(0,19)}.xlsx`, {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    }
+
+    function downloadXLSX(o){
+      const file = buildXLSX(o);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file);
+      a.download = file.name;
+      document.body.appendChild(a); a.click();
+      setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 400);
+    }
+
+    // ==== ACTIONS ====
+    function copyOrder(){
+      const o=exportOrder(true);
+      const txt=['Магазин: '+(o.shopName||'-'),'Контактный номер: '+(o.shopPhone||'-'), (o.comment?('Комментарий: '+o.comment):'')].filter(Boolean).join('\\n');
+      navigator.clipboard.writeText(txt).then(()=>toast('Текст скопирован')).catch(()=>toast('Не удалось скопировать'));
+    }
+
+    async function sendWA(){
+  const o = exportOrder(true);
+  if(!o.items.length) return toast('Корзина пуста');
+
+  // Формируем сообщение и ссылку
+  const message = ['Магазин: '+(o.shopName||'-'),'Контактный номер: '+(o.shopPhone||'-'), (o.comment?('Комментарий: '+o.comment):'')].filter(Boolean).join('\n');
+  const waUrl = 'https://wa.me/'+OPERATOR.whatsappPhone+'?text='+encodeURIComponent(message);
+
+  // iOS: загрузка Blob через <a download> часто блокируется. Пытаемся через Share Sheet, иначе просто открываем чат.
+  try {
+    const file = buildXLSX(o);
+    if (isIOS() && navigator.canShare && navigator.canShare({ files: [file], text: message })) {
+      await navigator.share({ files: [file], text: message });
+      toast('Открылось «Поделиться». Выберите WhatsApp.');
+      return;
+    }
+  } catch(e) { /* ignore */ }
+
+  // ANDROID/desktop: делаем ОБА действия в рамках одного клика, без window.open и без setTimeout
+  try {
+    const file = buildXLSX(o);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click(); // инициируем скачивание
+    // Следом открываем чат в текущей вкладке (так надёжнее на мобилках и в PWA)
+    window.location.href = waUrl;
+    setTimeout(()=>{ try{ URL.revokeObjectURL(a.href); a.remove(); }catch(e){} }, 1200);
+    toast('Excel скачан и открыт чат WhatsApp');
+  } catch(e) {
+    // Если что-то пошло не так — хотя бы открываем чат
+    window.location.href = waUrl;
+  }
+}
+
+    function sendEmail(){
+      const o=exportOrder(true); if(!o.items.length) return toast('Корзина пуста');
+      downloadXLSX(o);
+      const body=encodeURIComponent(['Магазин: '+(o.shopName||'-'),'Контактный номер: '+(o.shopPhone||'-'), (o.comment?('Комментарий: '+o.comment):'')].filter(Boolean).join('\\n'));
+      window.location.href='mailto:'+OPERATOR.email+'?subject='+encodeURIComponent('Заказ ТРАНЗИТ')+'&body='+body;
+      toast('Excel скачан — прикрепите файл в письме');
+    }
+
+    // ==== PROFILE ====
+    function renderProfile(){
+      app.innerHTML = `
+        <div class="header"><div class="container"><div class="header-inner"><div class="logo"><div class="logo-badge">👤</div><div>Профиль</div></div></div></div></div>
+        <div class="container">
+          <div class="small muted">Эти данные подставляются при оформлении заявки.</div>
+          <div style="margin-top:10px">
+            <div class="small muted">Название магазина</div>
+            <input id="profName" class="text-input" placeholder="Например: Market Ayan" value="${localStorage.getItem('shopName') || ''}"/>
+          </div>
+          <div style="margin-top:10px">
+            <div class="small muted">Контактный номер</div>
+            <input id="profPhone" class="text-input" placeholder="+7 7XX XXX XX XX" value="${localStorage.getItem('shopPhone') || ''}"/>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-accent" id="btnSaveProfile">Сохранить</button>
+          </div>
+        </div>`;
+      $('#profPhone').addEventListener('input', maskKZ);
+      $('#btnSaveProfile').addEventListener('click', ()=>{
+        localStorage.setItem('shopName',$('#profName').value.trim());
+        localStorage.setItem('shopPhone',$('#profPhone').value.trim());
+        toast('Профиль сохранён');
+      });
+    }
+
+    // ==== PROMOS ====
+    function renderPromos(){
+      app.innerHTML = `
+        <div class="header"><div class="container"><div class="header-inner"><div class="logo"><div class="logo-badge">%</div><div>Акции</div></div></div></div></div>
+        <div class="container">
+          <div class="card" style="padding:12px;margin:12px 0">
+            <div style="font-weight:800">Подарок за крупный заказ</div>
+            <div>Оформите заказ от <b>100&nbsp;000 ₸</b> — получите <b>5 кг</b> любого товара в подарок.</div>
+          </div>
+        </div>`;
+    }
+
+    // ==== COMMON ====
+    function updateBottom(){
+      let totalQty=0,totalSum=0; cart.forEach((q,id)=>{ const p=DATA.find(x=>x.id===id); if(p&&q>0){ totalQty+=q; totalSum+=q*p.price; } });
+      $('#cartCount').textContent=totalQty; $('#cartTotal').textContent=fmt(totalSum)+' ₸';
+      const visible= totalQty>0 && activeTab!=='cart'; $('#bottom').classList.toggle('hidden', !visible); $('#app').style.bottom = visible ? '140px' : '64px';
+    }
+
+    const modal=$('#modal'); const btnCheckout=$('#btnCheckout');
+    if(btnCheckout) btnCheckout.addEventListener('click', ()=>{ openModal(); });
+    $('#btnCancel').addEventListener('click', ()=> closeModal());
+    function openModal(){
+      $('#shopName').value=localStorage.getItem('shopName')||''; $('#shopPhone').value=localStorage.getItem('shopPhone')||'';
+      $('#shopComment').value='';
+      renderOrderList(); modal.classList.add('open'); modal.setAttribute('aria-hidden','false');
+    }
+    function closeModal(){ modal.classList.remove('open'); modal.setAttribute('aria-hidden','true'); }
+    function renderOrderList(){
+      const c=$('#orderList'); c.innerHTML=''; let sum=0;
+      cart.forEach((q,id)=>{ const p=DATA.find(x=>x.id===id); if(!p||q<=0) return; const line=q*p.price; sum+=line;
+        const row=document.createElement('div'); row.className='row';
+        row.innerHTML = `<div><div style="font-weight:700">${p.title}</div><div class="small" style="color:var(--muted)">${q} × ${fmt(p.price)} ₸</div></div><div style="font-weight:800">${fmt(line)} ₸</div>`;
+        c.appendChild(row);
+      });
+      $('#modalTotal').textContent = fmt(sum)+' ₸';
+    }
+    $('#btnSend').addEventListener('click', ()=>{
+      localStorage.setItem('shopName',$('#shopName').value.trim());
+      localStorage.setItem('shopPhone',$('#shopPhone').value.trim());
+      sendWA();
+      toast('Заявка сформирована');
+      cart.clear(); updateBottom(); closeModal();
+    });
+
+    function maskKZ(e){
+      const digits = e.target.value.replace(/\D/g,'');
+      let out = '+7 '; let d = digits; if(!d.startsWith('7')) d='7'+d;
+      if(d.length>0) out += d[0];
+      if(d.length>1) out += d.slice(1,4)?' '+d.slice(1,4):'';
+      if(d.length>4) out += d.slice(4,7)?' '+d.slice(4,7):'';
+      if(d.length>7) out += d.slice(7,9)?' '+d.slice(7,9):'';
+      if(d.length>9) out += d.slice(9,11)?' '+d.slice(9,11):'';
+      e.target.value = out.trim();
+    }
+
+    function switchTo(tab){ activeTab=tab; $$('#tabs .tab').forEach(x=>x.classList.toggle('active', x.dataset.tab===tab)); renderView(); updateBottom(); }
+
+    render();
+  });
+  </script>
