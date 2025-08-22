@@ -1,6 +1,6 @@
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
-    const cache = await caches.open('transit-pwa-v2');
+    const cache = await caches.open('transit-pwa-v3');
     await cache.addAll(['./','./index.html','./manifest.webmanifest']);
     self.skipWaiting();
   })());
@@ -13,7 +13,7 @@ self.addEventListener('fetch', (e) => {
     try {
       return await fetch(e.request);
     } catch (err) {
-      const cache = await caches.open('transit-pwa-v2');
+      const cache = await caches.open('transit-pwa-v3');
       const cached = await cache.match(e.request, { ignoreSearch: true });
       return cached || Response.error();
     }
